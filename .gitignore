@@ -1,0 +1,3 @@
+# Служебные папки Godot (создаются сами)
+.godot/
+export_presets.cfg
