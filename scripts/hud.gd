@@ -22,7 +22,10 @@ func _draw() -> void:
 	var fog := 0.0
 	if p.filter_left < B.filter_full * 0.10:
 		fog = 0.25
-	_vignette(size, 0.35 + 0.5 * dark, fog)
+	if p.mask_on:
+		_vignette(size, 0.35 + 0.5 * dark, fog)
+	elif p.suffocating:
+		_vignette(size, 0.5 * dark, 0.0)
 
 	# --- сообщение ---
 	if main.message_timer > 0.0:
@@ -46,6 +49,8 @@ func _draw() -> void:
 
 	# --- подсказка управления ---
 	var hint := "A/D идти · Shift бег · Ctrl крадучись · Пробел замри · E взять · R фильтр · Tab часы · F1 числа"
+	if "hint_text" in main:
+		hint = main.hint_text
 	draw_string(font, Vector2(0, size.y - 16), hint, HORIZONTAL_ALIGNMENT_CENTER, size.x, 14, Color(0.55, 0.58, 0.6))
 
 	# --- отладка (F1) ---
@@ -69,6 +74,24 @@ func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.75))
 		draw_string(font, Vector2(0, size.y / 2), main.fail_reason, HORIZONTAL_ALIGNMENT_CENTER, size.x, 30, Color(0.85, 0.8, 0.75))
 		draw_string(font, Vector2(0, size.y / 2 + 40), "Назад к последнему укрытию…", HORIZONTAL_ALIGNMENT_CENTER, size.x, 18, Color(0.6, 0.6, 0.6))
+
+	# --- записка деда ---
+	if "note_open" in main and main.note_open:
+		draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.55))
+		var pw := minf(640.0, size.x - 64.0)
+		var px := (size.x - pw) / 2.0
+		draw_rect(Rect2(px, 150, pw, 320), Color(0.78, 0.75, 0.66))
+		draw_multiline_string(font, Vector2(px + 32, 200), main.NOTE, HORIZONTAL_ALIGNMENT_LEFT, pw - 64, 20, -1, Color(0.12, 0.1, 0.08))
+		draw_string(font, Vector2(0, 500), "E — дальше", HORIZONTAL_ALIGNMENT_CENTER, size.x, 15, Color(0.7, 0.7, 0.7))
+
+	# --- финиш Пролога ---
+	if main.finished and main.has_method("finish_lines"):
+		var ta: float = clampf(main.title_t / 2.5, 0.0, 1.0)
+		var tb: float = clampf((main.title_t - 3.0) / 1.5, 0.0, 1.0)
+		draw_string(font, Vector2(0, size.y * 0.32), "ХИМЕРА", HORIZONTAL_ALIGNMENT_CENTER, size.x, 88, Color(0.75, 0.95, 0.9, ta))
+		draw_string(font, Vector2(0, size.y * 0.32 + 50), "Пролог", HORIZONTAL_ALIGNMENT_CENTER, size.x, 22, Color(0.7, 0.8, 0.78, tb))
+		draw_string(font, Vector2(0, size.y - 60), "Enter — сыграть ещё раз", HORIZONTAL_ALIGNMENT_CENTER, size.x, 16, Color(0.6, 0.6, 0.6, tb))
+		return
 
 	# --- финиш ---
 	if main.finished:

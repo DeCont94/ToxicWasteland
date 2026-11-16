@@ -23,6 +23,10 @@ var changing := 0.0       # идёт замена фильтра
 var knock_left := 0.0     # отбрасывание после контакта
 var knock_dir := 1.0
 var glass_cd := 0.0
+var mask_on := true       # в Прологе Артём надевает маску не сразу
+var silhouette := false   # true — рисовать силуэтом, а не серым прямоугольником
+var walk_phase := 0.0     # для походки
+var can_move := true      # уровень может на время забрать управление
 
 
 func reset_to(px: float, filter: float, spare_count: int) -> void:
@@ -96,7 +100,7 @@ func _process(delta: float) -> void:
 		hold_left = minf(cap, hold_left + cap / B.hold_recover_time * delta)
 
 	# --- движение ---
-	var dir := Input.get_axis("left", "right")
+	var dir := Input.get_axis("left", "right") if can_move else 0.0
 	var moving := dir != 0.0 and not freeze_pressed and knock_left <= 0.0
 	if moving:
 		facing = 1 if dir > 0.0 else -1
@@ -110,11 +114,14 @@ func _process(delta: float) -> void:
 		if suffocating:
 			speed *= 0.5
 		x = main.clamp_x(x + dir * speed * delta)
+		walk_phase += speed * delta * 2.2
 		step_timer -= delta
 		if step_timer <= 0.0:
 			var r: float = {"sneak": B.noise_sneak, "walk": B.noise_walk, "run": B.noise_run}[mode]
 			var label: String = {"sneak": "шаг крадучись", "walk": "шаг", "run": "бег"}[mode]
 			main.make_noise(x, r, label)
+			if main.has_method("play_step"):
+				main.play_step(mode)
 			step_timer = {"sneak": B.step_sneak, "walk": B.step_walk, "run": B.step_run}[mode]
 		# стекло хрустит, если идти не крадучись
 		glass_cd -= delta
@@ -146,7 +153,12 @@ func _process(delta: float) -> void:
 		mult = B.drain_run
 	elif winded > 0.0:
 		mult = B.drain_heavy
-	_drain(delta, mult)
+	if mask_on:
+		_drain(delta, mult)
+	elif main.has_method("in_fog") and main.in_fog(x):
+		_suffocate(delta)
+	else:
+		suffocating = false
 	_update_position()
 
 
@@ -174,6 +186,11 @@ func _breathe(delta: float) -> void:
 func _drain(delta: float, mult: float) -> void:
 	filter_left = maxf(0.0, filter_left - delta * mult)
 	if filter_left <= 0.0:
+		_suffocate(delta)
+
+
+func _suffocate(delta: float) -> void:
+	if true:
 		if not suffocating:
 			suffocating = true
 			suffocate_left = Balance.suffocation_time
@@ -206,6 +223,9 @@ func _update_position() -> void:
 
 
 func _draw() -> void:
+	if silhouette:
+		_draw_silhouette()
+		return
 	var m := Balance.PX_PER_M
 	var h := 1.7 * m
 	if mode == "sneak":
@@ -222,3 +242,54 @@ func _draw() -> void:
 	if changing > 0.0:
 		var p := 1.0 - changing / Balance.filter_change_time
 		draw_rect(Rect2(-w, -h - 20, 2 * w * p, 6), Color(0.8, 0.8, 0.8))
+
+
+## Силуэт Артёма: подросток в мешковатой одежде, с противогазом и фильтром.
+func _draw_silhouette() -> void:
+	var m := Balance.PX_PER_M
+	var ink := Color(0.03, 0.03, 0.035)
+	var crouch := 0.82 if mode == "sneak" else 1.0
+	var moving := mode in ["walk", "run", "sneak"]
+	var amp := 0.0
+	if moving:
+		amp = 0.35 if mode == "run" else 0.22
+	var sw := sin(walk_phase) * amp
+	var bob := absf(sin(walk_phase)) * (0.04 * m if moving else 0.0)
+	# дыхание: плечи чуть поднимаются
+	var br := sin(Time.get_ticks_msec() / 1000.0 * TAU / (1.6 if winded > 0.0 else 3.2)) * (0.0 if holding else 0.012 * m)
+	var hip := Vector2(0, -0.85 * m * crouch - bob)
+	var f := float(facing)
+	# ноги
+	for side in [-1.0, 1.0]:
+		var a: float = sw * side
+		var knee := hip + Vector2(sin(a) * 0.42 * m * f, 0.42 * m * crouch)
+		var foot := knee + Vector2(sin(a - absf(a) * 0.6) * 0.42 * m * f, 0.42 * m * crouch)
+		foot.y = minf(foot.y, 0.0)
+		draw_line(hip, knee, ink, 0.17 * m)
+		draw_line(knee, foot, ink, 0.15 * m)
+		draw_line(foot, foot + Vector2(0.14 * m * f, 0), ink, 0.1 * m)
+	# мешковатая куртка
+	var sh := hip + Vector2(0.04 * m * f, -0.62 * m * crouch + br)
+	var coat := PackedVector2Array([
+		hip + Vector2(-0.24 * m, 0.12 * m), hip + Vector2(0.24 * m, 0.12 * m),
+		sh + Vector2(0.21 * m, 0.0), sh + Vector2(0.12 * m, -0.06 * m),
+		sh + Vector2(-0.14 * m, -0.06 * m), sh + Vector2(-0.22 * m, 0.02 * m)])
+	draw_colored_polygon(coat, ink)
+	# рука (качается, или держит Дефлотатор)
+	var hand := sh + Vector2(sin(-sw) * 0.3 * m * f, 0.55 * m)
+	if main != null and main.has_method("aim_point") and main.has_deflotator():
+		hand = sh + (main.aim_point() - (position + sh)).normalized() * 0.5 * m
+	draw_line(sh + Vector2(0.05 * m * f, 0.05 * m), hand, ink, 0.12 * m)
+	# голова и противогаз
+	var head := sh + Vector2(0.03 * m * f, -0.2 * m)
+	draw_circle(head, 0.15 * m, ink)
+	if mask_on:
+		draw_circle(head + Vector2(0.11 * m * f, 0.07 * m), 0.08 * m, ink)        # фильтр-коробка
+		draw_line(head + Vector2(0.1 * m * f, 0.08 * m), head + Vector2(0.24 * m * f, 0.16 * m), ink, 0.09 * m)
+		# стёкла маски едва отсвечивают
+		draw_circle(head + Vector2(0.08 * m * f, -0.03 * m), 0.035 * m, Color(0.35, 0.55, 0.55, 0.55))
+	if holding:
+		draw_arc(head, 0.24 * m, 0, TAU, 24, Color(0.4, 0.9, 0.9, 0.35), 1.5)
+	if changing > 0.0:
+		var p := 1.0 - changing / Balance.filter_change_time
+		draw_rect(Rect2(-0.4 * m, -2.1 * m, 0.8 * m * p, 4), Color(0.8, 0.8, 0.8, 0.8))
