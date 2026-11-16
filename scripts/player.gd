@@ -1,0 +1,224 @@
+class_name Player
+extends Node2D
+## Артём: движение, шум шагов и дыхания, задержка дыхания, фильтр.
+
+var main: Node            # ссылка на главный скрипт уровня
+var x := 0.0              # позиция по горизонтали, в метрах
+var facing := 1
+var mode := "still"       # still / sneak / walk / run / freeze / change
+
+var step_timer := 0.0
+var breath_timer := 0.0
+var run_time := 0.0
+var winded := 0.0         # сколько ещё длится одышка
+var holding := false      # сейчас не дышит
+var hold_left := 8.0      # запас задержки дыхания
+var gasp_lock := false    # после судорожного вдоха надо отпустить Пробел
+var filter_left := 120.0
+var spares := 0
+var suffocating := false
+var suffocate_left := 0.0
+var cough_timer := 0.0
+var changing := 0.0       # идёт замена фильтра
+var knock_left := 0.0     # отбрасывание после контакта
+var knock_dir := 1.0
+var glass_cd := 0.0
+
+
+func reset_to(px: float, filter: float, spare_count: int) -> void:
+	x = px
+	filter_left = filter
+	spares = spare_count
+	mode = "still"
+	step_timer = 0.0
+	breath_timer = Balance.breath_interval
+	run_time = 0.0
+	winded = 0.0
+	holding = false
+	hold_left = Balance.hold_capacity
+	gasp_lock = false
+	suffocating = false
+	changing = 0.0
+	knock_left = 0.0
+	glass_cd = 0.0
+
+
+func hold_capacity() -> float:
+	return Balance.hold_capacity * (0.5 if winded > 0.0 else 1.0)
+
+
+func _process(delta: float) -> void:
+	if main == null or main.paused:
+		return
+	var B := Balance
+	var near: float = main.nearest_symbiote_distance(x)
+
+	# --- замена фильтра: стоим на месте ---
+	if changing > 0.0:
+		mode = "change"
+		changing -= delta
+		if changing <= 0.0:
+			filter_left = B.filter_full
+			spares -= 1
+			suffocating = false
+			main.make_noise(x, B.noise_filter_click, "щелчок фильтра")
+		_breathe(delta)
+		_drain(delta, 1.0)
+		_update_position()
+		return
+
+	# --- отбрасывание после контакта ---
+	if knock_left > 0.0:
+		var k := minf(delta, knock_left)
+		x = main.clamp_x(x + knock_dir * 7.0 * k)
+		knock_left -= k
+
+	# --- «Замри»: Пробел ---
+	var freeze_pressed := Input.is_action_pressed("freeze")
+	if not freeze_pressed:
+		if holding:
+			_release_breath()
+		gasp_lock = false
+	var want_hold := freeze_pressed and not gasp_lock
+	if want_hold and not holding and hold_left > 0.0:
+		holding = true
+	if holding:
+		var rate := B.hold_fear_mult if near <= B.hold_fear_distance else 1.0
+		hold_left -= rate * delta
+		if hold_left <= 0.0:
+			hold_left = 0.0
+			holding = false
+			gasp_lock = true
+			breath_timer = B.breath_interval
+			main.make_noise(x, B.noise_gasp, "судорожный вдох")
+	else:
+		var cap := hold_capacity()
+		hold_left = minf(cap, hold_left + cap / B.hold_recover_time * delta)
+
+	# --- движение ---
+	var dir := Input.get_axis("left", "right")
+	var moving := dir != 0.0 and not freeze_pressed and knock_left <= 0.0
+	if moving:
+		facing = 1 if dir > 0.0 else -1
+		if Input.is_action_pressed("run") and not suffocating:
+			mode = "run"
+		elif Input.is_action_pressed("sneak"):
+			mode = "sneak"
+		else:
+			mode = "walk"
+		var speed: float = {"sneak": B.speed_sneak, "walk": B.speed_walk, "run": B.speed_run}[mode]
+		if suffocating:
+			speed *= 0.5
+		x = main.clamp_x(x + dir * speed * delta)
+		step_timer -= delta
+		if step_timer <= 0.0:
+			var r: float = {"sneak": B.noise_sneak, "walk": B.noise_walk, "run": B.noise_run}[mode]
+			var label: String = {"sneak": "шаг крадучись", "walk": "шаг", "run": "бег"}[mode]
+			main.make_noise(x, r, label)
+			step_timer = {"sneak": B.step_sneak, "walk": B.step_walk, "run": B.step_run}[mode]
+		# стекло хрустит, если идти не крадучись
+		glass_cd -= delta
+		if main.on_glass(x) and mode != "sneak" and glass_cd <= 0.0:
+			main.make_noise(x, B.noise_glass, "стекло под ногой")
+			glass_cd = 0.8
+	else:
+		mode = "freeze" if freeze_pressed else "still"
+		step_timer = 0.05
+
+	# --- одышка после бега ---
+	if mode == "run":
+		run_time += delta
+		if run_time >= B.winded_after_run:
+			winded = B.winded_duration
+	else:
+		run_time = 0.0
+		winded = maxf(0.0, winded - delta)
+
+	# --- действия ---
+	if Input.is_action_just_pressed("use"):
+		main.try_pickup(self)
+	if Input.is_action_just_pressed("change_filter") and spares > 0 and not holding:
+		changing = B.filter_change_time
+
+	_breathe(delta)
+	var mult := 1.0
+	if mode == "run":
+		mult = B.drain_run
+	elif winded > 0.0:
+		mult = B.drain_heavy
+	_drain(delta, mult)
+	_update_position()
+
+
+func _release_breath() -> void:
+	holding = false
+	breath_timer = Balance.breath_interval
+	if hold_left > hold_capacity() * Balance.hold_quiet_part:
+		main.make_noise(x, Balance.noise_exhale_quiet, "тихий выдох")
+	else:
+		main.make_noise(x, Balance.noise_exhale_loud, "шумный выдох")
+
+
+func _breathe(delta: float) -> void:
+	if holding:
+		return
+	breath_timer -= delta
+	if breath_timer <= 0.0:
+		breath_timer = Balance.breath_interval
+		if winded > 0.0:
+			main.make_noise(x, Balance.noise_breath_heavy, "частое дыхание")
+		else:
+			main.make_noise(x, Balance.noise_breath_calm, "дыхание")
+
+
+func _drain(delta: float, mult: float) -> void:
+	filter_left = maxf(0.0, filter_left - delta * mult)
+	if filter_left <= 0.0:
+		if not suffocating:
+			suffocating = true
+			suffocate_left = Balance.suffocation_time
+			cough_timer = 0.0
+		suffocate_left -= delta
+		cough_timer -= delta
+		if cough_timer <= 0.0:
+			cough_timer = 3.0
+			main.make_noise(x, Balance.noise_cough, "кашель")
+		if suffocate_left <= 0.0:
+			main.fail("Кончился воздух.")
+
+
+func on_contact(from_x: float) -> void:
+	if Balance.contact_mode == "fail":
+		main.fail("Рой коснулся маски.")
+		return
+	filter_left = maxf(0.0, filter_left - Balance.contact_filter_cost)
+	knock_dir = 1.0 if x >= from_x else -1.0
+	knock_left = 0.3
+	holding = false
+	gasp_lock = true
+	main.make_noise(x, Balance.noise_cough, "кашель")
+	main.flash_message("Симбиот облепил маску: минус %d с фильтра" % int(Balance.contact_filter_cost))
+
+
+func _update_position() -> void:
+	position = Vector2(x * Balance.PX_PER_M, 0.0)
+	queue_redraw()
+
+
+func _draw() -> void:
+	var m := Balance.PX_PER_M
+	var h := 1.7 * m
+	if mode == "sneak":
+		h = 1.3 * m
+	var w := 0.5 * m
+	var body := Color(0.55, 0.57, 0.6)
+	if suffocating:
+		body = Color(0.6, 0.45, 0.45)
+	draw_rect(Rect2(-w / 2.0, -h, w, h), body)
+	# маска — кружок на месте головы, со стороны взгляда
+	draw_circle(Vector2(facing * w * 0.3, -h + 0.2 * m), 0.12 * m, Color(0.2, 0.22, 0.24))
+	if holding:
+		draw_rect(Rect2(-w / 2.0 - 3, -h - 3, w + 6, h + 6), Color(0.4, 0.9, 0.9, 0.9), false, 2.0)
+	if changing > 0.0:
+		var p := 1.0 - changing / Balance.filter_change_time
+		draw_rect(Rect2(-w, -h - 20, 2 * w * p, 6), Color(0.8, 0.8, 0.8))
